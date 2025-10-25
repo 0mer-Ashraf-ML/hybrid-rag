@@ -1,4 +1,5 @@
 # src/retriever/filtered_bm25_retriever.py
+import bz2
 import pickle
 from rank_bm25 import BM25Okapi
 from src.utils.config import get_config
@@ -6,21 +7,36 @@ from src.utils.model_cache import get_cached_query_classifier
 from pathlib import Path
 
 class FilteredBM25Retriever:
-    """
-    BM25 retriever with metadata filtering.
-    Uses cached query classifier for efficiency.
-    Shared between standard and ultra modes.
-    """
     
-    def __init__(self):
-        cfg = get_config()
-        # Use ORIGINAL metadata
-        metadata_path = cfg.get("wiki_metadata_path")
+    def __init__(self,mode='standard'):
         
-        print(f"Loading metadata for BM25 from {metadata_path}...")
-        with open(metadata_path, "rb") as f:
-            checkpoint_data = pickle.load(f)
-            self.id_map = checkpoint_data['id_map']
+        self.stop_words = {
+            'a', 'an', 'and', 'are', 'as', 'at', 'be', 'by', 'for',
+            'from', 'has', 'he', 'in', 'is', 'it', 'its', 'of', 'on',
+            'that', 'the', 'to', 'was', 'will', 'with',
+            'tell', 'me', 'about', 'what', 'who', 'when', 'where',
+            'why', 'how', 'which', 'can', 'could', 'would', 'should',
+            'do', 'does', 'did', 'have', 'been', 'being'
+        }
+
+        cfg = get_config()
+        print(f"Loading metadata for BM25 from {cfg['wiki_ultra_metadata_path']}...")
+    
+        if mode == 'ultra':
+            # Load compressed metadata
+            print('Loading ultra metadata')
+            metadata_path = cfg.get("wiki_ultra_metadata_path")
+            with bz2.open(metadata_path, "rb") as f:
+                data = pickle.load(f)
+                # Reconstruct id_map from compressed format
+                self.id_map = self._reconstruct_id_map(data)
+        else:
+            print('Loading standard metadata')
+            # Load standard metadata
+            metadata_path = cfg.get("wiki_metadata_path")
+            with open(metadata_path, "rb") as f:
+                checkpoint_data = pickle.load(f)
+                self.id_map = checkpoint_data['id_map']
         
         # Verify
         sample_key = list(self.id_map.keys())[0]
@@ -47,6 +63,56 @@ class FilteredBM25Retriever:
         print(f"✅ Filtered BM25 ready with {len(self.id_map):,} documents")
         if self.domain_index:
             print(f"   Domains: {list(self.domain_index.keys())}")
+
+    def _reconstruct_id_map(self, compressed_data):
+        """Reconstruct id_map from compressed format"""
+        docs = compressed_data['d']
+        title_dict = compressed_data.get('td', [])
+        url_dict = compressed_data.get('ud', [])
+        
+        id_map = {}
+        for idx, doc in docs.items():
+            # Decompress text if needed
+            text = self._decompress_if_needed(doc.get('t', ''), doc.get('_tc'))
+            summary = self._decompress_if_needed(doc.get('s', ''), doc.get('_sc'))
+            
+            # Reconstruct full metadata
+            id_map[idx] = {
+                'id': doc.get('i'),
+                'text': text,
+                'summary': summary,
+                'title': title_dict[doc['ti']] if doc.get('ti', -1) >= 0 else '',
+                'url': url_dict[doc['ui']] if doc.get('ui', -1) >= 0 else '',
+                'primary_domain': doc.get('d', 'general'),
+                'text_length': doc.get('tl', len(text)),
+                'summary_length': doc.get('sl', len(summary))
+            }
+        
+        return id_map
+
+    def _decompress_if_needed(self, data, compression_flag):
+        import lzma
+        """Decompress text based on compression method"""
+        if not compression_flag:
+            return data if isinstance(data, str) else ''
+        
+        lzma.decompress(data).decode('utf-8')
+
+        # if compression_flag == 2:  # LZMA
+        #     return lzma.decompress(data).decode('utf-8')
+        # elif compression_flag == 1:
+        #     import zlib  # zlib
+        #     return zlib.decompress(data).decode('utf-8')
+        
+        return data
+
+    def _tokenize_query(self, query: str) -> list:
+        """Remove stop words and short tokens"""
+        tokens = query.lower().split()
+        filtered = [t for t in tokens if t not in self.stop_words and len(t) > 2]
+        
+        # Fallback to original if too few remain
+        return filtered if len(filtered) >= 2 else tokens        
     
     def _build_bm25_for_indices(self, indices: list) -> tuple:
         """Build BM25 index for specific document indices."""
@@ -92,7 +158,8 @@ class FilteredBM25Retriever:
         bm25, index_map = self._build_bm25_for_indices(candidate_indices)
         
         # Search
-        tokens = query.lower().split()
+        tokens = self._tokenize_query(query)
+        print(f"  📝 BM25 tokens: {tokens}")
         scores = bm25.get_scores(tokens)
         ranked_positions = list(reversed(scores.argsort()))[:top_k]
         

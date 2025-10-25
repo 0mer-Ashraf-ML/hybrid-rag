@@ -8,13 +8,6 @@ from collections import Counter
 import math
 
 class AdvancedSourceEvaluator:
-    """
-    Advanced source evaluation combining multiple evaluation strategies:
-    - Original keyword/domain/quality checks
-    - Query-type specific intelligence
-    - Semantic understanding with TF-IDF-like scoring
-    - Optional LLM-based evaluation
-    """
     
     def __init__(self, use_llm_evaluation: bool = False):
         self.api_key = os.getenv("OPENAI_API_KEY")
@@ -22,9 +15,12 @@ class AdvancedSourceEvaluator:
         
         # Stop words for better keyword matching
         self.stop_words = {
-            'a', 'an', 'the', 'is', 'are', 'was', 'were', 'what', 'who', 
-            'when', 'where', 'why', 'how', 'do', 'does', 'did', 'of', 'in',
-            'on', 'at', 'to', 'for', 'with', 'by', 'from', 'about', 'as'
+            'a', 'an', 'and', 'are', 'as', 'at', 'be', 'by', 'for',
+            'from', 'has', 'he', 'in', 'is', 'it', 'its', 'of', 'on',
+            'that', 'the', 'to', 'was', 'will', 'with',
+            'tell', 'me', 'about', 'what', 'who', 'when', 'where',
+            'why', 'how', 'which', 'can', 'could', 'would', 'should',
+            'do', 'does', 'did', 'have', 'been', 'being'
         }
         
         # Query type patterns for adaptive evaluation
@@ -282,10 +278,7 @@ class AdvancedSourceEvaluator:
         return min(normalized_score * weight, 1.0)
     
     def _content_coverage_score(self, query_type: str, doc: Dict, key_concepts: List[str]) -> float:
-        """
-        Query-type specific content evaluation.
-        Checks for appropriate patterns based on query type.
-        """
+        
         text = doc.get('text', '')
         summary = doc.get('summary', '')
         combined = f"{summary} {text[:2000]}"
@@ -473,17 +466,29 @@ class AdvancedSourceEvaluator:
         """
         # Default weights (balanced)
         default_weights = {
-            "keyword_relevance": 0.12,
-            "domain_relevance": 0.10,
-            "content_quality": 0.10,
-            "retrieval_confidence": 0.13,
-            "semantic_relevance": 0.20,
-            "content_coverage": 0.15,
-            "source_authority": 0.10,
-            "information_density": 0.05,
-            "freshness": 0.05
-        }
-        
+        "keyword_relevance": 0.08,       # Reduced from 0.12
+        "domain_relevance": 0.10,
+        "content_quality": 0.10,
+        "retrieval_confidence": 0.15,    # Boosted from 0.13
+        "semantic_relevance": 0.25,      # Boosted from 0.20
+        "content_coverage": 0.12,        # Reduced from 0.15
+        "source_authority": 0.10,
+        "information_density": 0.05,
+        "freshness": 0.05
+    }
+        if query_type == 'general' or query_type == 'factual':
+            
+            return {
+                "keyword_relevance": 0.10,
+                "domain_relevance": 0.08,
+                "content_quality": 0.12,
+                "retrieval_confidence": 0.18,    # Trust the retrieval!
+                "semantic_relevance": 0.28,      # Semantic is key
+                "content_coverage": 0.08,        # De-emphasize phrasing
+                "source_authority": 0.10,
+                "information_density": 0.04,
+                "freshness": 0.02
+            }   
         # Type-specific adjustments
         adjustments = {
             'definition': {

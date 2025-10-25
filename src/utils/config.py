@@ -23,9 +23,9 @@ WIKI_DOCS_JSON = WIKI_INDEX_DIR / "docs.json"
 WIKI_PROGRESS = WIKI_INDEX_DIR / "progress.json"
 
 # Ultra-compressed index paths (50% size, <3% quality loss)
-WIKI_ULTRA_INDEX_DIR = WIKI_INDEX_DIR / "ultra_compressed"
+WIKI_ULTRA_INDEX_DIR = Path("/Users/omarashraf/Downloads/hybrid-rag/ultra_compressed_208k_p6")
 WIKI_ULTRA_FAISS_INDEX = WIKI_ULTRA_INDEX_DIR / "wikipedia_ultra.index"
-WIKI_ULTRA_METADATA = WIKI_ULTRA_INDEX_DIR / "metadata_ultra_compressed.pkl"
+WIKI_ULTRA_METADATA = WIKI_ULTRA_INDEX_DIR / "metadata_ultra_enhanced.pkl"
 WIKI_ULTRA_PCA = WIKI_ULTRA_INDEX_DIR / "pca_192.pkl"
 WIKI_ULTRA_QUANT = WIKI_ULTRA_INDEX_DIR / "quant_params.pkl"
 
@@ -108,6 +108,7 @@ def get_config():
     Returns a dictionary with all configuration parameters.
     Can be extended to support environment-specific overrides.
     """
+    print('Getting config')
     return {
         # Paths - Standard Index
         "wiki_index_path": str(WIKI_FAISS_INDEX),
