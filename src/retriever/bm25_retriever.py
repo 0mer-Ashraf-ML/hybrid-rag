@@ -5,6 +5,7 @@ from src.utils.config import get_config
 
 class BM25Retriever:
     def __init__(self):
+        print('BM25Retriever initialized')
         cfg = get_config()
         docs_path = cfg["wiki_docs_json"]
         

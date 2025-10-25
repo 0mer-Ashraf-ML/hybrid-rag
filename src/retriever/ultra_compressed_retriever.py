@@ -1,17 +1,8 @@
-# src/retriever/ultra_compressed_retriever.py
-"""
-Ultra-compressed retriever with full integration into hybrid system.
-Uses 192D PCA + int8 + zlib compression (50% size reduction, <3% quality loss)
-
-NOTE: This retriever accesses the SAME Wikipedia data as standard mode,
-but uses a compressed index for 50% storage savings and faster retrieval.
-Results may differ slightly due to PCA compression, but source documents are identical.
-"""
-
 import faiss
 import pickle
 import numpy as np
 import zlib
+import lzma
 from pathlib import Path
 from src.utils.config import get_config, get_index_paths
 from src.utils.model_cache import get_cached_embedder, get_cached_query_classifier
@@ -25,6 +16,7 @@ class UltraCompressedRetriever:
     - Faster retrieval (1.5-2x speedup)
     - <3% quality loss vs standard mode
     - Same source Wikipedia data
+    - NOW: Domain filtering support!
     """
     
     def __init__(self):
@@ -35,11 +27,10 @@ class UltraCompressedRetriever:
         if paths['mode'] == 'ultra_compressed':
             INDEX_DIR = Path(cfg['wiki_ultra_index_path']).parent
         else:
-            INDEX_DIR = Path("data/index/ultra_compressed")
+            INDEX_DIR = Path("/Users/omarashraf/Downloads/hybrid-rag/ultra_compressed_208k_p6")
         
         print(f"Loading ultra-compressed RAG index from {INDEX_DIR}...")
         
-        # Load FAISS index
         index_path = INDEX_DIR / "wikipedia_ultra.index"
         if not index_path.exists():
             raise FileNotFoundError(
@@ -48,34 +39,44 @@ class UltraCompressedRetriever:
             )
         
         self.index = faiss.read_index(str(index_path))
-        self.index.nprobe = cfg.get("ultra_nprobe", 20)  # Search quality
+        self.index.nprobe = cfg.get("ultra_nprobe", 20)  
         
-        # Load PCA model
         pca_path = INDEX_DIR / "pca_192.pkl"
         with open(pca_path, "rb") as f:
             self.pca_model = pickle.load(f)
         
-        # Load compressed metadata
+        enhanced_path = INDEX_DIR / "metadata_ultra_enhanced.pkl"
+        regular_path = INDEX_DIR / "metadata_ultra_compressed.pkl"
         
-        metadata_path = INDEX_DIR / "metadata_ultra_compressed.pkl"
-        with open(metadata_path, "rb") as f:
+        if enhanced_path.exists():
+            metadata_path = enhanced_path
+            print(f"  ✓ Using enhanced metadata with domain support")
+        else:
+            metadata_path = regular_path
+            print(f"  ⚠️  Using regular metadata (no domain filtering)")
+            print(f"     Run: python scripts/enhance_ultra_metadata.py")
+        
+        import bz2
+        with bz2.open(metadata_path, "rb") as f:
             data = pickle.load(f)
-            self.docs = data['d']  # Changed from data['docs']
+            self.docs = data['d']  # Documents
             self.title_dict = data.get('td', [])  # Title dictionary
             self.url_dict = data.get('ud', [])    # URL dictionary
             self.domains_compressed = data.get('domains', {})  
             
-            # Decompress domain index
-            self.domain_index = {
-                k: np.frombuffer(v, dtype=np.int32).tolist()
-                for k, v in self.domains_compressed.items()
-            }
+            if self.domains_compressed:
+                self.domain_index = {
+                    k: np.frombuffer(v, dtype=np.int32).tolist()
+                    for k, v in self.domains_compressed.items()
+                }
+                print(f"  ✓ Domain filtering enabled: {len(self.domain_index)} domains")
+            else:
+                self.domain_index = {}
+                print(f"  ⚠️  Domain filtering disabled (no domain index)")
         
-        # Use cached embedding model (shared across ALL retrievers - EFFICIENT!)
-        embedding_model = cfg.get("embedding_model", "BAAI/bge-base-en")
+        embedding_model = cfg.get("embedding_model", "BAAI/bge-base-en-v1.5")
         self.embedder = get_cached_embedder(embedding_model)
         
-        # Use cached query classifier
         self.classifier = get_cached_query_classifier()
         
         print(f"✅ Ultra-compressed index loaded:")
@@ -85,22 +86,55 @@ class UltraCompressedRetriever:
         print(f"   Domains: {len(self.domain_index)}")
         print(f"   nprobe: {self.index.nprobe}")
     
-    def _decompress_text(self, compressed_data):
-        """Decompress zlib-compressed text"""
-        if isinstance(compressed_data, bytes):
-            try:
+    def _decompress_text(self, compressed_data, method=None):
+        """
+        Decompress text based on compression method.
+        
+        Args:
+            compressed_data: Compressed text data (bytes)
+            method: Compression method (1=zlib, 2=LZMA, None=auto-detect)
+        
+        Returns:
+            Decompressed text string
+        """
+        if not compressed_data:
+            return ""
+        
+        if not isinstance(compressed_data, bytes):
+            return compressed_data if compressed_data else ""
+        
+        try:
+            if method == 1:  # zlib
                 return zlib.decompress(compressed_data).decode('utf-8')
-            except Exception as e:
-                print(f"Warning: Failed to decompress text: {e}")
-                return ""
-        return compressed_data if compressed_data else ""
+            elif method == 2:  # LZMA
+                return lzma.decompress(compressed_data).decode('utf-8')
+            else:
+                # Auto-detect: try zlib first (faster, more common for small texts)
+                try:
+                    return zlib.decompress(compressed_data).decode('utf-8')
+                except:
+                    return lzma.decompress(compressed_data).decode('utf-8')
+        except Exception as e:
+            print(f"Warning: Failed to decompress text: {e}")
+            return ""
     
     def _apply_pca(self, query_embedding):
-        """Apply PCA transformation to query (768D → 192D)"""
         return np.dot(
             query_embedding - self.pca_model['mean'],
             self.pca_model['components'].T
         ).astype(np.float32)
+    
+    def _get_document_title(self, doc):
+        title_idx = doc.get('ti', -1)
+        if title_idx >= 0 and title_idx < len(self.title_dict):
+            return self.title_dict[title_idx]
+        return doc.get('t', 'Unknown')
+    
+    def _get_document_url(self, doc):
+        url_idx = doc.get('ui', -1)
+        if url_idx >= 0 and url_idx < len(self.url_dict):
+            return self.url_dict[url_idx]
+        return doc.get('u', '')
     
     def retrieve(self, query: str, top_k: int = 15, use_filtering: bool = True):
         """
@@ -118,29 +152,24 @@ class UltraCompressedRetriever:
         but retrieved using compressed embeddings (192D PCA).
         Chunk numbers and document IDs are consistent with source data.
         """
-        # Encode query (768D) - uses CACHED model, very fast!
         qvec = self.embedder.encode(
             [query], 
             normalize_embeddings=True, 
             convert_to_numpy=True
         )
         
-        # Apply PCA (768D → 192D)
         qvec_pca = self._apply_pca(qvec)
         
-        # Domain filtering (optional)
         filtered_ids = None
         if use_filtering and self.domain_index:
             domains = self.classifier.classify_query(query, top_k=2)
             print(f"  🎯 Domains (Ultra): {domains}")
             
-            # Collect candidate document IDs
             candidate_ids = set()
             for domain, confidence in domains:
                 if domain in self.domain_index:
                     candidate_ids.update(self.domain_index[domain])
             
-            # Add general domain
             if "general" in self.domain_index:
                 candidate_ids.update(self.domain_index["general"][:1000])
             
@@ -148,12 +177,9 @@ class UltraCompressedRetriever:
                 filtered_ids = sorted(list(candidate_ids))
                 print(f"  📊 Ultra searching in {len(filtered_ids):,} filtered documents")
         
-        # Search FAISS index
         if filtered_ids:
-            # Filter search (search only within specific IDs)
             D, I = self.index.search(qvec_pca, top_k * 3)  # Get more, filter later
             
-            # Filter results
             filtered_results = []
             for score, idx in zip(D[0].tolist(), I[0].tolist()):
                 if idx in filtered_ids:
@@ -164,10 +190,8 @@ class UltraCompressedRetriever:
             D = np.array([[r[0] for r in filtered_results]])
             I = np.array([[r[1] for r in filtered_results]])
         else:
-            # Standard search
             D, I = self.index.search(qvec_pca, top_k)
         
-        # Build results in standard format
         results = []
         for score, idx in zip(D[0].tolist(), I[0].tolist()):
             if idx < 0 or str(idx) not in self.docs:
@@ -175,30 +199,34 @@ class UltraCompressedRetriever:
             
             doc = self.docs[str(idx)]
             
-            # Decompress text if needed
-            text = doc.get('text', '')
-            if doc.get('_text_compressed', False):
-                text = self._decompress_text(text)
+            title = self._get_document_title(doc)
+            url = self._get_document_url(doc)
             
-            summary = doc.get('summary', '')
-            if doc.get('_summary_compressed', False):
-                summary = self._decompress_text(summary)
+            text = doc.get('txt', '')
+            text_compressed = doc.get('_tc', False)
+            if text_compressed:
+                text = self._decompress_text(text, text_compressed)
             
-            # Build result in standard format (compatible with HybridRetriever)
-            # Include chunk_no/page_no for reference
+            summary = doc.get('s', '')
+            summary_compressed = doc.get('_sc', False)
+            if summary_compressed:
+                summary = self._decompress_text(summary, summary_compressed)
+            
+            domain = doc.get('d', 'general')
+            
             results.append({
                 "id": str(idx),
                 "doc_idx": int(idx),
-                "chunk_no": int(idx),  # Chunk number (same as doc_idx)
-                "page_no": int(idx),   # Page number (same as doc_idx)
+                "chunk_no": int(idx),  
+                "page_no": int(idx),   
                 "score": float(score),
                 "text": text,
                 "summary": summary,
                 "meta": {
-                    "title": doc.get('title', ''),
-                    "url": doc.get('url', ''),
-                    "categories": "",  # Not stored in ultra-compressed
-                    "primary_domain": doc.get('domain', 'general'),
+                    "title": title,
+                    "url": url,
+                    "categories": "",  
+                    "primary_domain": domain,
                     "text_length": doc.get('tl', len(text)),
                     "summary_length": doc.get('sl', len(summary)),
                     "text": text,
@@ -211,7 +239,6 @@ class UltraCompressedRetriever:
         return results
     
     def get_stats(self):
-        """Get index statistics"""
         return {
             "total_documents": len(self.docs),
             "total_vectors": self.index.ntotal,
@@ -219,5 +246,6 @@ class UltraCompressedRetriever:
             "original_dimensions": self.pca_model['original_dim'],
             "nprobe": self.index.nprobe,
             "domains": list(self.domain_index.keys()),
+            "domain_filtering": len(self.domain_index) > 0,
             "compression_ratio": f"{768 / self.pca_model['n_components']:.1f}x"
         }

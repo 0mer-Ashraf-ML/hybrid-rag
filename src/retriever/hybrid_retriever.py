@@ -1,4 +1,5 @@
 
+from re import M
 from .filtered_bm25_retriever import FilteredBM25Retriever
 from .filtered_faiss_retriever import FilteredFaissRetriever
 from .ultra_compressed_retriever import UltraCompressedRetriever
@@ -72,9 +73,9 @@ class UnifiedHybridRetriever:
         global _RETRIEVER_CACHE
         
         if 'ultra_faiss' not in _RETRIEVER_CACHE:
-            print("  Loading ultra-compressed retrievers (BM25 + FAISS-192D) - one-time initialization...")
+            print("  Loading ultra-compressed retrievers (BM25 + FAISS-192Dm) - one-time initialization...")
             # Ultra mode ALSO uses BM25 (same as standard)
-            _RETRIEVER_CACHE['ultra_bm25'] = FilteredBM25Retriever()
+            _RETRIEVER_CACHE['ultra_bm25'] = FilteredBM25Retriever(mode="ultra")
             _RETRIEVER_CACHE['ultra_faiss'] = UltraCompressedRetriever()
             print(f"  ✅ Ultra retrievers cached")
         else:
